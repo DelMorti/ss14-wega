@@ -1,7 +1,11 @@
 using System.Threading;
 using System.Threading.Tasks;
+using Content.Shared.Access;
+using Content.Shared.Damage;
 using Content.Shared.NPC;
+using Content.Shared.StationRecords;
 using Robust.Shared.Map;
+using Robust.Shared.Prototypes;
 using Robust.Shared.Timing;
 using Robust.Shared.Utility;
 
@@ -19,6 +23,13 @@ public abstract class PathRequest
 
     public List<PathPoly> Polys = new();
 
+    // Each request is processed by one pathfinding worker at a time.
+    public readonly HashSet<EntityUid> LookupScratch = new();
+    public readonly Dictionary<EntityUid, bool> SmashCapabilityCache = new();
+    public ICollection<ProtoId<AccessLevelPrototype>> AccessTags = new HashSet<ProtoId<AccessLevelPrototype>>();
+    public ICollection<StationRecordKey> StationRecordKeys = new HashSet<StationRecordKey>();
+    public bool AllowLockedDoorPrying;
+
     public bool Started = false;
 
     #region Pathfinding state
@@ -35,15 +46,17 @@ public abstract class PathRequest
     public readonly PathFlags Flags;
     public readonly int CollisionLayer;
     public readonly int CollisionMask;
+    public readonly DamageSpecifier? SmashDamage;
 
     #endregion
 
-    public PathRequest(EntityCoordinates start, PathFlags flags, int layer, int mask, CancellationToken cancelToken)
+    public PathRequest(EntityCoordinates start, PathFlags flags, int layer, int mask, CancellationToken cancelToken, DamageSpecifier? smashDamage = null)
     {
         Start = start;
         Flags = flags;
         CollisionLayer = layer;
         CollisionMask = mask;
+        SmashDamage = smashDamage;
         Tcs = new TaskCompletionSource<PathResult>(cancelToken);
     }
 }
@@ -64,7 +77,8 @@ public sealed class AStarPathRequest : PathRequest
         float distance,
         int layer,
         int mask,
-        CancellationToken cancelToken) : base(start, flags, layer, mask, cancelToken)
+        CancellationToken cancelToken,
+        DamageSpecifier? smashDamage = null) : base(start, flags, layer, mask, cancelToken, smashDamage)
     {
         Distance = distance;
         End = end;
@@ -90,7 +104,8 @@ public sealed class BFSPathRequest : PathRequest
         PathFlags flags,
         int layer,
         int mask,
-        CancellationToken cancelToken) : base(start, flags, layer, mask, cancelToken)
+        CancellationToken cancelToken,
+        DamageSpecifier? smashDamage = null) : base(start, flags, layer, mask, cancelToken, smashDamage)
         {
             ExpansionRange = expansionRange;
             ExpansionLimit = expansionLimit;

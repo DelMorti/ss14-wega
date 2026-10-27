@@ -233,6 +233,23 @@ public sealed partial class HTNSystem : EntitySystem
                             break;
                         }
                     }
+
+                    // Some NPCs deliberately retain their current target during planning.
+                    // If it has become invalid, the new plan can have the same traversal
+                    // record while selecting a different entity, so compare its effects too.
+                    if (!newPlanBetter && comp.ReplanWhenTargetChanges &&
+                        comp.Blackboard.TryGetValue<EntityUid>("Target", out var currentTarget, EntityManager))
+                    {
+                        foreach (var effects in comp.PlanningJob.Result.Effects)
+                        {
+                            if (effects != null && effects.TryGetValue("Target", out var plannedTarget) &&
+                                plannedTarget is EntityUid plannedUid && plannedUid != currentTarget)
+                            {
+                                newPlanBetter = true;
+                                break;
+                            }
+                        }
+                    }
                 }
 
                 if (comp.Plan == null || newPlanBetter)

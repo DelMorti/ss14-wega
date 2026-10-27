@@ -116,6 +116,9 @@ namespace Content.Server.NPC.Systems
             }
 
             Log.Debug($"Waking {ToPrettyString(uid)}");
+            if (!HasComp<ActiveNPCComponent>(uid))
+                component.PlanAccumulator = 0f;
+
             EnsureComp<ActiveNPCComponent>(uid);
         }
 
@@ -129,6 +132,12 @@ namespace Content.Server.NPC.Systems
             // Don't bother with an event
             if (TryComp<HTNComponent>(uid, out var htn))
             {
+                // Do not let a planner job started before sleep restore a stale plan
+                // after the NPC wakes up again.
+                htn.PlanningToken?.Cancel();
+                htn.PlanningToken = null;
+                htn.PlanningJob = null;
+
                 if (htn.Plan != null)
                 {
                     var currentOperator = htn.Plan.CurrentOperator;
@@ -164,6 +173,7 @@ namespace Content.Server.NPC.Systems
             switch (args.NewMobState)
             {
                 case MobState.Alive:
+                case MobState.PreCritical:
                     WakeNPC(uid, component);
                     break;
                 case MobState.Critical:

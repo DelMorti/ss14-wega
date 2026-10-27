@@ -25,6 +25,9 @@ public sealed partial class PickAccessibleOperator : HTNOperator
     [DataField("pathfindKey")]
     public string PathfindKey = NPCBlackboard.PathfindKey;
 
+    [DataField("allowObstacleHandling")]
+    public bool AllowObstacleHandling = true;
+
     /// <inheritdoc/>
     public override async Task<(bool Valid, Dictionary<string, object>? Effects)> Plan(NPCBlackboard blackboard,
         CancellationToken cancelToken)
@@ -41,7 +44,7 @@ public sealed partial class PickAccessibleOperator : HTNOperator
             owner,
             maxRange,
             cancelToken,
-            flags: _pathfinding.GetFlags(blackboard));
+            flags: _pathfinding.GetFlags(blackboard, AllowObstacleHandling));
 
         if (path.Result != PathResult.Path)
         {

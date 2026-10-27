@@ -58,15 +58,17 @@ public struct PathfindingData : IEquatable<PathfindingData>
     public int CollisionLayer;
     public int CollisionMask;
     public float Damage;
+    public float SmashCost;
 
-    public bool IsFreeSpace => (Flags == PathfindingBreadcrumbFlag.None && Damage.Equals(0f));
+    public bool IsFreeSpace => (Flags == PathfindingBreadcrumbFlag.None && Damage.Equals(0f) && SmashCost.Equals(0f));
 
-    public PathfindingData(PathfindingBreadcrumbFlag flag, int layer, int mask, float damage)
+    public PathfindingData(PathfindingBreadcrumbFlag flag, int layer, int mask, float damage, float smashCost = 0f)
     {
         Flags = flag;
         CollisionLayer = layer;
         CollisionMask = mask;
         Damage = damage;
+        SmashCost = smashCost;
     }
 
     public bool IsEquivalent(PathfindingData other)
@@ -81,7 +83,8 @@ public struct PathfindingData : IEquatable<PathfindingData>
         return CollisionLayer.Equals(other.CollisionLayer) &&
                CollisionMask.Equals(other.CollisionMask) &&
                Flags.Equals(other.Flags) &&
-               Damage.Equals(other.Damage);
+               Damage.Equals(other.Damage) &&
+               SmashCost.Equals(other.SmashCost);
     }
 
     public override bool Equals(object? obj)
@@ -91,7 +94,7 @@ public struct PathfindingData : IEquatable<PathfindingData>
 
     public override int GetHashCode()
     {
-        return HashCode.Combine((int) Flags, CollisionLayer, CollisionMask);
+        return HashCode.Combine((int) Flags, CollisionLayer, CollisionMask, Damage, SmashCost);
     }
 }
 
@@ -120,4 +123,9 @@ public enum PathfindingBreadcrumbFlag : ushort
     /// Is there climbing involved
     /// </summary>
     Climb = 1 << 4,
+
+    /// <summary>
+    /// A powered airlock has a substantially higher traversal cost for NPCs.
+    /// </summary>
+    PoweredDoor = 1 << 5,
 }

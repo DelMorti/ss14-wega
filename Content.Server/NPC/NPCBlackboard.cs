@@ -314,6 +314,9 @@ public sealed partial class NPCBlackboard : IEnumerable<KeyValuePair<string, obj
     /// </summary>
     public const string NavSmash = "NavSmash";
 
+    /// <summary>Can the NPC acquire targets through entities whose collision layer is not opaque.</summary>
+    public const string NavSeeThroughTransparent = "NavSeeThroughTransparent";
+
     /// <summary>
     /// Can the NPC climb obstacles for steering.
     /// </summary>

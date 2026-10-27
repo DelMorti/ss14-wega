@@ -3,6 +3,8 @@ using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
 using Content.Shared.NPC;
+using Content.Shared.Doors.Components;
+using Content.Shared.Storage.Components;
 using Content.Shared.Physics;
 using Robust.Shared.Collections;
 using Robust.Shared.Map;
@@ -43,6 +45,7 @@ public sealed partial class PathfindingSystem
         SubscribeLocalEvent<GridRemovalEvent>(OnGridRemoved);
         SubscribeLocalEvent<GridPathfindingComponent, ComponentShutdown>(OnGridPathShutdown);
         SubscribeLocalEvent<CollisionChangeEvent>(OnCollisionChange);
+        SubscribeLocalEvent<AirlockComponent, AirlockPowerStateChangedEvent>(OnAirlockPowerChanged);
         SubscribeLocalEvent<CollisionLayerChangeEvent>(OnCollisionLayerChange);
         SubscribeLocalEvent<PhysicsBodyTypeChangedEvent>(OnBodyTypeChange);
         SubscribeLocalEvent<TileChangedEvent>(OnTileChange);
@@ -246,6 +249,16 @@ public sealed partial class PathfindingSystem
         // This will also rebuild on door open / closes which I think is good?
         var aabb = _lookup.GetAABBNoContainer(ev.BodyUid, xform.Coordinates.Position, xform.LocalRotation);
         DirtyChunkArea(xform.GridUid.Value, aabb);
+    }
+
+    private void OnAirlockPowerChanged(Entity<AirlockComponent> ent, ref AirlockPowerStateChangedEvent args)
+    {
+        var xform = Transform(ent.Owner);
+        if (xform.GridUid is not { } gridUid)
+            return;
+
+        var aabb = _lookup.GetAABBNoContainer(ent.Owner, xform.Coordinates.Position, xform.LocalRotation);
+        DirtyChunkArea(gridUid, aabb);
     }
 
     private void OnCollisionLayerChange(ref CollisionLayerChangeEvent ev)
@@ -484,6 +497,7 @@ public sealed partial class PathfindingSystem
                         var collisionMask = 0x0;
                         var collisionLayer = 0x0;
                         var damage = 0f;
+                        var smashCost = 0f;
 
                         foreach (var (ent, xform, fixtures) in fixtureList)
                         {
@@ -535,6 +549,9 @@ public sealed partial class PathfindingSystem
                             if (_doorQuery.HasComponent(ent))
                             {
                                 flags |= PathfindingBreadcrumbFlag.Door;
+
+                                if (_airlockQuery.TryComp(ent, out var airlock) && airlock.Powered)
+                                    flags |= PathfindingBreadcrumbFlag.PoweredDoor;
                             }
 
                             if (_climbableQuery.HasComponent(ent))
@@ -544,7 +561,41 @@ public sealed partial class PathfindingSystem
 
                             if (_destructibleQuery.TryGetComponent(ent, out var damageable))
                             {
-                                damage += _destructible.DestroyedAt(ent, damageable).Float();
+                                var durability = _destructible.DestroyedAt(ent, damageable).Float();
+                                damage += durability;
+
+                                // Ignore destructibles that do not block standard NPC movement.
+                                var blocksNpc = false;
+                                foreach (var fixture in fixtures)
+                                {
+                                    if ((fixture.CollisionMask & PathfindingCollisionLayer) == 0 &&
+                                        (fixture.CollisionLayer & PathfindingCollisionMask) == 0)
+                                        continue;
+
+                                    blocksNpc = true;
+                                    break;
+                                }
+
+                                if (!blocksNpc)
+                                    continue;
+
+                                // Estimate break effort from barrier type and durability.
+                                if (HasComp<EntityStorageComponent>(ent))
+                                {
+                                    smashCost += 6f + durability * 0.12f;
+                                }
+                                else if (_tagSystem.HasTag(ent, WindowTag))
+                                {
+                                    smashCost += 2f + durability * 0.08f;
+                                }
+                                else if (_grilleQuery.HasComponent(ent))
+                                {
+                                    smashCost += 5f + durability * 0.1f;
+                                }
+                                else
+                                {
+                                    smashCost += 12f + durability * 0.25f;
+                                }
                             }
                         }
 
@@ -559,7 +610,7 @@ public sealed partial class PathfindingSystem
                         var crumb = new PathfindingBreadcrumb()
                         {
                             Coordinates = new Vector2i(xOffset, yOffset),
-                            Data = new PathfindingData(flags, collisionLayer, collisionMask, damage),
+                            Data = new PathfindingData(flags, collisionLayer, collisionMask, damage, smashCost),
                         };
 
                         points[xOffset, yOffset] = crumb;
@@ -693,7 +744,7 @@ public sealed partial class PathfindingSystem
 
                 if (polys.Count == existing.Count)
                 {
-                    // May want to update damage or the likes if it's different but not invalidate the ref.
+                    // Refresh costs without invalidating unchanged geometry.
                     for (var i = 0; i < existing.Count; i++)
                     {
                         var ePoly = existing[i];
@@ -706,6 +757,7 @@ public sealed partial class PathfindingSystem
                         }
 
                         ePoly.Data.Damage = poly.Data.Damage;
+                        ePoly.Data.SmashCost = poly.Data.SmashCost;
                     }
 
                     if (isEquivalent)

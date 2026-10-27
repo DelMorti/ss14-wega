@@ -5,8 +5,8 @@ using Content.Shared.CombatMode;
 using Content.Shared.DoAfter;
 using Content.Shared.Doors.Components;
 using Content.Shared.NPC;
-using Robust.Shared.Map.Components;
 using Robust.Shared.Physics;
+using Robust.Shared.Map.Components;
 using Robust.Shared.Utility;
 using ClimbableComponent = Content.Shared.Climbing.Components.ClimbableComponent;
 using ClimbingComponent = Content.Shared.Climbing.Components.ClimbingComponent;
@@ -75,10 +75,14 @@ public sealed partial class NPCSteeringSystem
                 return SteeringObstacleStatus.Failed;
         }
 
-        if (!TryComp<MapGridComponent>(poly.GraphUid, out var grid))
+        if (!HasComp<MapGridComponent>(poly.GraphUid))
             return SteeringObstacleStatus.Completed;
 
-        var obstacleEnts = new HashSet<EntityUid>(_mapSystem.GetLocalAnchoredEntities(poly.GraphUid, grid, poly.Box));
+        // Include dynamic fixtures such as storage units.
+        var obstacleEnts = new HashSet<EntityUid>();
+        _lookup.GetLocalEntitiesIntersecting(poly.GraphUid, poly.Box, obstacleEnts,
+            flags: LookupFlags.Dynamic | LookupFlags.Static);
+
         FilterObstacleEntities((uid, component), mask, layer, obstacleEnts);
 
         // Nothing actually near us.
@@ -161,6 +165,7 @@ public sealed partial class NPCSteeringSystem
             foreach (var ent in obstacleEnts)
             {
                 if (!_destructibleQuery.HasComponent(ent) ||
+                    !CanDamageObstacle(ent, weaponComp) ||
                     !_interaction.InRangeUnobstructed(uid, ent, weaponComp.Range))
                     continue;
 

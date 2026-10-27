@@ -1527,8 +1527,6 @@
         true
       NavPry: !type:Bool
         true
-      NavSmash: !type:Bool
-        true
   - type: Puller
     needsHands: false
   - type: Prying

@@ -13,6 +13,7 @@ using Content.Shared.Storage.Components;
 using Content.Shared.Tools.Systems;
 using Content.Shared.Verbs;
 using Content.Shared.Wall;
+using Content.Shared.Zombies;
 using Content.Shared.Whitelist;
 using Robust.Shared.Audio.Systems;
 using Robust.Shared.Containers;
@@ -420,7 +421,8 @@ public abstract partial class SharedEntityStorageSystem : EntitySystem
             return false;
 
         if (!component.Contents.Contains(user) &&
-            !HasComp<HandsComponent>(user))
+            !HasComp<HandsComponent>(user) &&
+            !HasComp<ZombieComponent>(user))
             return false;
 
         if (_weldable.IsWelded(target))

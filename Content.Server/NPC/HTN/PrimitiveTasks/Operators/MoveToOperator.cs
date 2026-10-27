@@ -61,6 +61,9 @@ public sealed partial class MoveToOperator : HTNOperator, IHtnConditionalShutdow
     [DataField("stopOnLineOfSight")]
     public bool StopOnLineOfSight;
 
+    [DataField("allowObstacleHandling")]
+    public bool AllowObstacleHandling = true;
+
     private const string MovementCancelToken = "MovementCancelToken";
 
     public override async Task<(bool Valid, Dictionary<string, object>? Effects)> Plan(NPCBlackboard blackboard,
@@ -108,9 +111,9 @@ public sealed partial class MoveToOperator : HTNOperator, IHtnConditionalShutdow
                 targetCoordinates,
             range,
             cancelToken,
-            _pathfind.GetFlags(blackboard));
+            _pathfind.GetFlags(blackboard, AllowObstacleHandling));
 
-        if (path.Result != PathResult.Path)
+        if (path.Result is not (PathResult.Path or PathResult.PartialPath))
         {
             return (false, null);
         }
@@ -135,7 +138,7 @@ public sealed partial class MoveToOperator : HTNOperator, IHtnConditionalShutdow
         var uid = blackboard.GetValue<EntityUid>(NPCBlackboard.Owner);
 
         // Re-use the path we may have if applicable.
-        var comp = _steering.Register(uid, targetCoordinates);
+        var comp = _steering.Register(uid, targetCoordinates, allowObstacleHandling: AllowObstacleHandling);
         comp.ArriveOnLineOfSight = StopOnLineOfSight;
 
         if (blackboard.TryGetValue<float>(RangeKey, out var range, _entManager))

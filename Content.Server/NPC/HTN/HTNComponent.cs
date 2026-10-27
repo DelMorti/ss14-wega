@@ -41,6 +41,13 @@ public sealed partial class HTNComponent : NPCComponent
     [DataField]
     public bool ConstantlyReplan = true;
 
+    /// <summary>
+    /// Replace the current plan when a newly planned target differs from the old one.
+    /// Used by NPCs that retain a target until it is no longer valid.
+    /// </summary>
+    [DataField]
+    public bool ReplanWhenTargetChanges;
+
     [ViewVariables]
     public HTNPlanJob? PlanningJob = null;
 

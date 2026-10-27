@@ -1,4 +1,6 @@
 using Content.Shared.NPC;
+using Content.Shared.Damage;
+using Robust.Shared.Physics;
 
 namespace Content.Server.NPC.Pathfinding;
 
@@ -49,42 +51,59 @@ public sealed partial class PathfindingSystem
         }
 
         // Corvax-Wega-Add-start
-        if (!end.Equals(start))
+        if ((request.Flags & PathFlags.IgnoreStepTriggers) == 0x0 && !end.Equals(start))
         {
-            var ents = new HashSet<EntityUid>();
+            var ents = request.LookupScratch;
+            ents.Clear();
             _lookup.GetLocalEntitiesIntersecting(end.GraphUid, end.Box, ents);
 
             foreach (var ent in ents)
             {
                 if (_stepTriggerQuery.HasComponent(ent))
-                    return 1000f; // Doubtful, but okэy
+                    return 2f * OctileDistance(end, start);
             }
         }
         // Corvax-Wega-Add-end
 
-        if ((request.CollisionLayer & end.Data.CollisionMask) != 0x0 ||
-            (request.CollisionMask & end.Data.CollisionLayer) != 0x0)
+        var hasCollision = (request.CollisionLayer & end.Data.CollisionMask) != 0x0 ||
+                           (request.CollisionMask & end.Data.CollisionLayer) != 0x0;
+
+        var isDoor = (end.Data.Flags & PathfindingBreadcrumbFlag.Door) != 0x0;
+        var isAccess = (end.Data.Flags & PathfindingBreadcrumbFlag.Access) != 0x0;
+        if (hasCollision &&
+            ((request.Flags & PathFlags.Smashing) != 0x0 || (isDoor && isAccess)))
         {
-            var isDoor = (end.Data.Flags & PathfindingBreadcrumbFlag.Door) != 0x0;
-            var isAccess = (end.Data.Flags & PathfindingBreadcrumbFlag.Access) != 0x0;
+            request.LookupScratch.Clear();
+            _lookup.GetLocalEntitiesIntersecting(end.GraphUid, end.Box, request.LookupScratch);
+        }
+
+        if (hasCollision)
+        {
             var isClimb = (end.Data.Flags & PathfindingBreadcrumbFlag.Climb) != 0x0;
 
-            // TODO: Handling power + door prying
-            // Door we should be able to open
             if (isDoor)
             {
-                if (!isAccess && (request.Flags & PathFlags.Interact) != 0x0)
+                var requiresPrying = isAccess && !CanAccessDoor(request);
+                if (requiresPrying)
+                {
+                    if (!request.AllowLockedDoorPrying || (request.Flags & PathFlags.Prying) == 0x0)
+                        return 0f;
+
+                    // Retry locked doors only after ordinary routes fail.
+                    modifier += (end.Data.Flags & PathfindingBreadcrumbFlag.PoweredDoor) != 0x0
+                        ? 100000f
+                        : 20f;
+                }
+                else if ((request.Flags & PathFlags.Interact) != 0x0)
                     modifier += 0.5f;
-                else if (isAccess && (request.Flags & PathFlags.Prying) != 0x0)
-                    modifier += 10f;
                 else
                     // Last ditch—try to bump the door if it's the only feasible option.
                     modifier += 20f;
             }
-            else if ((request.Flags & PathFlags.Smashing) != 0x0 && end.Data.Damage > 0f)
+            else if ((request.Flags & PathFlags.Smashing) != 0x0 && end.Data.SmashCost > 0f &&
+                     CanDamageObstacle(request, request.LookupScratch))
             {
-                // Breaking stuff should be usually last resort, especially because we WILL try to punch walls.
-                modifier += 10f + end.Data.Damage / 10f;
+                modifier += end.Data.SmashCost;
             }
             else if (isClimb && (request.Flags & PathFlags.Climbing) != 0x0)
             {
@@ -97,6 +116,86 @@ public sealed partial class PathfindingSystem
         }
 
         return modifier * OctileDistance(end, start);
+    }
+
+    private bool CanAccessDoor(PathRequest request)
+    {
+        foreach (var entity in request.LookupScratch)
+        {
+            if (_doorQuery.HasComponent(entity) &&
+                _accessReaderQuery.TryComp(entity, out var reader) &&
+                _access.IsAllowed(request.AccessTags, request.StationRecordKeys, entity, reader))
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool CanDamageObstacle(PathRequest request, HashSet<EntityUid> entities)
+    {
+        if (request.SmashDamage is not { } damage || !damage.AnyPositive())
+            return false;
+
+        foreach (var entity in entities)
+        {
+            if (request.SmashCapabilityCache.TryGetValue(entity, out var canDamage))
+            {
+                if (canDamage)
+                    return true;
+                continue;
+            }
+
+            if (!_destructibleQuery.HasComponent(entity) ||
+                !_injurableQuery.TryComp(entity, out var injurable) ||
+                !_fixturesQuery.TryComp(entity, out var fixtures) ||
+                !CanBlockPath(request, fixtures))
+            {
+                request.SmashCapabilityCache[entity] = false;
+                continue;
+            }
+
+            var applicableDamage = new DamageSpecifier();
+            foreach (var (type, amount) in damage.DamageDict)
+            {
+                if (amount <= 0 || !_damageable.CanBeDamagedBy((entity, injurable), type))
+                    continue;
+
+                applicableDamage.DamageDict[type] = amount;
+            }
+
+            if (applicableDamage.Empty)
+            {
+                request.SmashCapabilityCache[entity] = false;
+                continue;
+            }
+
+            if (!_damageableQuery.TryComp(entity, out var damageable) ||
+                _damageable.GetDamageModifierSet((entity, damageable)) is not { } modifierSet ||
+                !DamageSpecifier.ApplyModifierSet(applicableDamage, modifierSet).Empty)
+            {
+                request.SmashCapabilityCache[entity] = true;
+                return true;
+            }
+
+            request.SmashCapabilityCache[entity] = false;
+        }
+
+        return false;
+    }
+
+    private static bool CanBlockPath(PathRequest request, FixturesComponent fixtures)
+    {
+        foreach (var fixture in fixtures.Fixtures.Values)
+        {
+            if (!fixture.Hard)
+                continue;
+
+            if ((request.CollisionLayer & fixture.CollisionMask) != 0 ||
+                (request.CollisionMask & fixture.CollisionLayer) != 0)
+                return true;
+        }
+
+        return false;
     }
 
     #region Simplifier

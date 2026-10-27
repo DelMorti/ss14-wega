@@ -9,6 +9,7 @@ using Content.Server.Inventory;
 using Content.Server.Mind;
 using Content.Server.NPC;
 using Content.Server.NPC.HTN;
+using Content.Server.NPC.Pathfinding;
 using Content.Server.NPC.Systems;
 using Content.Server.StationEvents.Components;
 using Content.Shared.Body;
@@ -45,6 +46,7 @@ using Content.Shared.Zombies;
 using Robust.Shared.Audio.Systems;
 using Robust.Shared.Containers;
 using Robust.Shared.Player;
+using Robust.Shared.Map;
 using Robust.Shared.Prototypes;
 using Content.Shared.Disease.Components; // Corvax-Wega-Disease
 using Content.Server.NPC.Components; // Corvax-Wega-Zombie
@@ -86,6 +88,7 @@ public sealed partial class ZombieSystem
 
     private static readonly ProtoId<TagPrototype> InvalidForGlobalSpawnSpellTag = "InvalidForGlobalSpawnSpell";
     private static readonly ProtoId<TagPrototype> CannotSuicideTag = "CannotSuicide";
+    private static readonly ProtoId<TagPrototype> DoorBumpOpenerTag = "DoorBumpOpener";
     private static readonly ProtoId<NpcFactionPrototype> ZombieFaction = "Zombie";
     private static readonly string MindRoleZombie = "MindRoleZombie";
     private static readonly List<ProtoId<AntagPrototype>> BannableZombiePrototypes = ["Zombie"];
@@ -254,20 +257,20 @@ public sealed partial class ZombieSystem
             _visualBody.ApplyMarkings(target, newMarkings);
         }
 
-        //We have specific stuff for humanoid zombies because they matter more
+        //Humanoids use the zombie bite damage profile.
         if (HasComp<HumanoidProfileComponent>(target))
         {
-            //This is done here because non-humanoids shouldn't get baller damage
             melee.Damage = zombiecomp.DamageOnBite;
-
-            // humanoid zombies get to pry open doors and shit
-            var pryComp = EnsureComp<PryingComponent>(target);
-            pryComp.SpeedModifier = 0.75f;
-            pryComp.PryPowered = true;
-            pryComp.Force = true;
-
-            Dirty(target, pryComp);
         }
+
+        // Every zombie type can pry; animal zombies also receive the door bump tag
+        // so bump-open doors recognize them as valid openers.
+        var pryComp = EnsureComp<PryingComponent>(target);
+        pryComp.SpeedModifier = 0.75f;
+        pryComp.PryPowered = true;
+        pryComp.Force = true;
+        Dirty(target, pryComp);
+        _tag.AddTag(target, DoorBumpOpenerTag);
 
         Dirty(target, melee);
 
@@ -308,14 +311,36 @@ public sealed partial class ZombieSystem
         _faction.ClearFactions(target, dirty: false);
         _faction.AddFaction(target, ZombieFaction);
 
+        // Drop a target immediately when it finishes turning into a zombie. Otherwise
+        // zombies can keep attacking it until their next utility-service replan.
+        var zombies = EntityQueryEnumerator<ZombieComponent, HTNComponent>();
+        while (zombies.MoveNext(out var zombieUid, out _, out var zombieHtn))
+        {
+            if (zombieUid == target ||
+                !zombieHtn.Blackboard.TryGetValue<EntityUid>("Target", out var currentTarget, EntityManager) ||
+                currentTarget != target)
+                continue;
+
+            zombieHtn.Blackboard.Remove<EntityUid>("Target");
+            zombieHtn.Blackboard.Remove<EntityCoordinates>("TargetCoordinates");
+            zombieHtn.Blackboard.Remove<PathResultEvent>(NPCBlackboard.PathfindKey);
+            _npc.SleepNPC(zombieUid, zombieHtn);
+            _npc.WakeNPC(zombieUid, zombieHtn);
+        }
+
         //gives it the funny "Zombie ___" name.
         _nameMod.RefreshNameModifiers(target);
 
         _identity.QueueIdentityUpdate(target);
 
         var htn = EnsureComp<HTNComponent>(target);
-        htn.RootTask = new HTNCompoundTask() { Task = "SimpleHostileCompound" };
+        htn.RootTask = new HTNCompoundTask() { Task = "ZombieHostileCompound" };
+        htn.ReplanWhenTargetChanges = true;
         htn.Blackboard.SetValue(NPCBlackboard.Owner, target);
+        htn.Blackboard.SetValue(NPCBlackboard.NavPry, true);
+        htn.Blackboard.SetValue(NPCBlackboard.NavSmash, true);
+        htn.Blackboard.SetValue(NPCBlackboard.NavInteract, true);
+        htn.Blackboard.SetValue(NPCBlackboard.NavSeeThroughTransparent, true);
         _npc.SleepNPC(target, htn);
 
         //He's gotta have a mind

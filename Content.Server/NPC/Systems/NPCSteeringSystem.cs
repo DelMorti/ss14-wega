@@ -10,6 +10,9 @@ using Content.Shared.Access.Systems;
 using Content.Shared.CCVar;
 using Content.Shared.Climbing.Systems;
 using Content.Shared.CombatMode;
+using Content.Shared.Damage.Components;
+using Content.Shared.Damage;
+using Content.Shared.Damage.Systems;
 using Content.Shared.Interaction;
 using Content.Shared.Movement.Components;
 using Content.Shared.Movement.Events;
@@ -69,11 +72,14 @@ public sealed partial class NPCSteeringSystem : SharedNPCSteeringSystem
     [Dependency] private SharedPhysicsSystem _physics = default!;
     [Dependency] private SharedTransformSystem _transform = default!;
     [Dependency] private SharedCombatModeSystem _combat = default!;
+    [Dependency] private DamageableSystem _damageable = default!;
 
     [Dependency] private EntityQuery<FixturesComponent> _fixturesQuery = default!;
     [Dependency] private EntityQuery<MovementSpeedModifierComponent> _modifierQuery = default!;
     [Dependency] private EntityQuery<NpcFactionMemberComponent> _factionQuery = default!;
     [Dependency] private EntityQuery<PhysicsComponent> _physicsQuery = default!;
+    [Dependency] private EntityQuery<InjurableComponent> _injurableQuery = default!;
+    [Dependency] private EntityQuery<DamageableComponent> _damageableQuery = default!;
     [Dependency] private EntityQuery<TransformComponent> _xformQuery = default!;
 
     private ObjectPool<HashSet<EntityUid>> _entSetPool =
@@ -163,10 +169,22 @@ public sealed partial class NPCSteeringSystem : SharedNPCSteeringSystem
     /// <summary>
     /// Adds the AI to the steering system to move towards a specific target
     /// </summary>
-    public NPCSteeringComponent Register(EntityUid uid, EntityCoordinates coordinates, NPCSteeringComponent? component = null)
+    public NPCSteeringComponent Register(EntityUid uid, EntityCoordinates coordinates, NPCSteeringComponent? component = null, bool allowObstacleHandling = true)
     {
+        var flags = _pathfindingSystem.GetFlags(uid);
+        if (!allowObstacleHandling)
+            flags &= ~(PathFlags.Prying | PathFlags.Smashing);
         if (Resolve(uid, ref component, false))
         {
+            if (component.Flags != flags || component.AllowObstacleHandling != allowObstacleHandling)
+            {
+                component.PathfindToken?.Cancel();
+                component.PathfindToken = null;
+                component.CurrentPath.Clear();
+                component.Flags = flags;
+                component.AllowObstacleHandling = allowObstacleHandling;
+            }
+
             if (component.Coordinates.Equals(coordinates))
                 return component;
 
@@ -177,7 +195,8 @@ public sealed partial class NPCSteeringSystem : SharedNPCSteeringSystem
         else
         {
             component = AddComp<NPCSteeringComponent>(uid);
-            component.Flags = _pathfindingSystem.GetFlags(uid);
+            component.Flags = flags;
+            component.AllowObstacleHandling = allowObstacleHandling;
         }
 
         ResetStuck(component, Transform(uid).Coordinates);
@@ -444,6 +463,8 @@ public sealed partial class NPCSteeringSystem : SharedNPCSteeringSystem
         steering.PathfindToken = new CancellationTokenSource();
 
         var flags = _pathfindingSystem.GetFlags(uid);
+        if (!steering.AllowObstacleHandling)
+            flags &= ~(PathFlags.Prying | PathFlags.Smashing);
 
         var result = await _pathfindingSystem.GetPathSafe(
             uid,

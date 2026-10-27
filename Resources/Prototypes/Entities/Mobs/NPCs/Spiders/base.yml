@@ -138,6 +138,9 @@
   - type: HTN
     rootTask:
       task: SimpleHostileCompound
+    blackboard:
+      NavSeeThroughTransparent: !type:Bool
+        true
   - type: GhostRole
     makeSentient: true
     name: ghost-role-information-giant-spider-name

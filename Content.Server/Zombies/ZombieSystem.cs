@@ -4,13 +4,16 @@ using Content.Server.Body.Systems;
 using Content.Server.Chat;
 using Content.Server.Chat.Systems;
 using Content.Server.Emoting.Systems;
+using Content.Server.Destructible;
 using Content.Shared.Speech.EntitySystems;
 using Content.Shared.Anomaly.Components;
 using Content.Shared.Armor;
 using Content.Shared.Bed.Sleep;
 using Content.Shared.Body.Systems;
 using Content.Shared.Cloning.Events;
+using Content.Shared.CombatMode;
 using Content.Shared.Chat;
+using Content.Shared.Examine;
 using Content.Shared.Damage.Systems;
 using Content.Shared.Inventory;
 using Content.Shared.Mind;
@@ -21,17 +24,24 @@ using Content.Shared.Mobs.Systems;
 using Content.Shared.Popups;
 using Content.Shared.Revolutionary;
 using Content.Shared.Roles;
+using Content.Shared.Storage.Components;
 using Content.Shared.Roles.Components;
 using Content.Shared.Weapons.Melee.Events;
+using Content.Shared.Weapons.Melee;
 using Content.Shared.Zombies;
 using Robust.Shared.Prototypes;
 using Robust.Shared.Random;
 using Robust.Shared.Timing;
 using Content.Server.NPC.Components; // Corvax-Wega-Zombie
+using Content.Server.NPC.HTN;
+using Content.Server.Storage.EntitySystems;
 using Content.Shared.NPC; // Corvax-Wega-Zombie
+using Content.Shared.NPC.Components;
+using Robust.Shared.Map;
 using Content.Server.Ghost.Roles.Components;
 using Content.Shared.Medical;
 using Content.Shared.Construction.Steps;
+using Robust.Shared.Player;
 
 namespace Content.Server.Zombies
 {
@@ -48,6 +58,9 @@ namespace Content.Server.Zombies
         [Dependency] private MobStateSystem _mobState = default!;
         [Dependency] private SharedPopupSystem _popup = default!;
         [Dependency] private SharedRoleSystem _role = default!;
+        [Dependency] private SharedTransformSystem _transform = default!;
+        [Dependency] private ExamineSystemShared _examine = default!;
+        [Dependency] private SharedMeleeWeaponSystem _melee = default!;
 
         public readonly ProtoId<NpcFactionPrototype> Faction = "Zombie";
 
@@ -77,6 +90,7 @@ namespace Content.Server.Zombies
             SubscribeLocalEvent<ZombieComponent, MindAddedMessage>(OnMindAdded);
             SubscribeLocalEvent<ZombieComponent, MindRemovedMessage>(OnMindRemoved);
             SubscribeLocalEvent<ZombieComponent, AttemptConvertRevolutionaryEvent>(OnAttemptConvert);
+            SubscribeLocalEvent<EntitySpokeEvent>(OnEntitySpoke);
 
             SubscribeLocalEvent<PendingZombieComponent, MapInitEvent>(OnPendingMapInit);
             SubscribeLocalEvent<PendingZombieComponent, BeforeRemoveAnomalyOnDeathEvent>(OnBeforeRemoveAnomalyOnDeath);
@@ -84,6 +98,33 @@ namespace Content.Server.Zombies
             SubscribeLocalEvent<IncurableZombieComponent, MapInitEvent>(OnPendingMapInit);
 
             SubscribeLocalEvent<ZombifyOnDeathComponent, MobStateChangedEvent>(OnDamageChanged);
+        }
+
+        private void OnEntitySpoke(EntitySpokeEvent ev)
+        {
+            // Zombies must not attract one another with their own speech or groans.
+            // Infected living entities remain valid prey and can still draw zombies in.
+            if (HasComp<ZombieComponent>(ev.Source) ||
+                !TryComp(ev.Source, out NpcFactionMemberComponent? sourceFaction) ||
+                !TryComp(ev.Source, out TransformComponent? sourceXform))
+                return;
+
+            var zombies = EntityQueryEnumerator<ZombieComponent, HTNComponent, TransformComponent>();
+            while (zombies.MoveNext(out var zombie, out var zombieComp, out var htn, out var zombieXform))
+            {
+                if (!htn.Enabled || !zombieXform.Coordinates.TryDistance(EntityManager, _transform,
+                        sourceXform.Coordinates, out var distance) || distance > 12f ||
+                    !_faction.IsFactionHostile("Zombie", (ev.Source, sourceFaction)) ||
+                    !_examine.InRangeUnOccluded(zombie, ev.Source, 12f))
+                    continue;
+
+                // Seed the normal hostile-target query with the overheard speaker.
+                // A short expiry keeps the last known position from becoming permanent tracking.
+                zombieComp.HeardTarget = ev.Source;
+                zombieComp.HeardTargetExpires = _timing.CurTime + TimeSpan.FromSeconds(5);
+                htn.Blackboard.SetValue("Target", ev.Source);
+                htn.Blackboard.SetValue("TargetCoordinates", sourceXform.Coordinates);
+            }
         }
 
         private void OnBeforeRemoveAnomalyOnDeath(Entity<PendingZombieComponent> ent, ref BeforeRemoveAnomalyOnDeathEvent args)
@@ -121,6 +162,48 @@ namespace Content.Server.Zombies
         {
             base.Update(frameTime);
             var curTime = _timing.CurTime;
+
+            // If the zombie's current prey is hiding in a closed, destructible
+            // EntityStorage, attack that specific container with normal melee.
+            var storageTargets = EntityQueryEnumerator<ZombieComponent, HTNComponent, TransformComponent>();
+            while (storageTargets.MoveNext(out var zombieUid, out _, out var htn, out var zombieXform))
+            {
+                if (!htn.Enabled ||
+                    !htn.Blackboard.TryGetValue<EntityUid>("Target", out var target, EntityManager) ||
+                    !Exists(target) || HasComp<ZombieComponent>(target) ||
+                    !_containerSystem.TryGetContainingContainer(target, out var containingContainer) ||
+                    !TryComp<EntityStorageComponent>(containingContainer.Owner, out var storage) || storage.Open ||
+                    !HasComp<DestructibleComponent>(containingContainer.Owner) ||
+                    !TryComp<TransformComponent>(containingContainer.Owner, out var storageXform) ||
+                    !_melee.TryGetWeapon(zombieUid, out var weaponUid, out var weapon) ||
+                    weapon.NextAttack > curTime ||
+                    !zombieXform.Coordinates.TryDistance(EntityManager, _transform, storageXform.Coordinates, out var distance) ||
+                    distance > weapon.Range + 0.5f)
+                    continue;
+
+                if (!TryComp<CombatModeComponent>(zombieUid, out var combatMode))
+                    continue;
+
+                _combat.SetInCombatMode(zombieUid, true, combatMode);
+                _melee.AttemptLightAttack(zombieUid, weaponUid, weapon, containingContainer.Owner);
+                _combat.SetInCombatMode(zombieUid, false, combatMode);
+            }
+
+            var heardTargets = EntityQueryEnumerator<ZombieComponent, HTNComponent>();
+            while (heardTargets.MoveNext(out _, out var zombie, out var htn))
+            {
+                if (zombie.HeardTarget == null || zombie.HeardTargetExpires > curTime)
+                    continue;
+
+                if (htn.Blackboard.TryGetValue<EntityUid>("Target", out var target, EntityManager) &&
+                    target == zombie.HeardTarget)
+                {
+                    htn.Blackboard.Remove<EntityUid>("Target");
+                    htn.Blackboard.Remove<EntityCoordinates>("TargetCoordinates");
+                }
+
+                zombie.HeardTarget = null;
+            }
 
             // Hurt the living infected
             var query = EntityQueryEnumerator<PendingZombieComponent, Shared.Damage.Components.DamageableComponent, MobStateComponent>();
@@ -198,6 +281,11 @@ namespace Content.Server.Zombies
         {
             if (args.NewMobState == MobState.Alive)
             {
+                // NPCSystem sleeps HTN zombies in critical. Explicitly wake them on
+                // recovery so their AI resumes after they stand back up.
+                if (!HasComp<ActorComponent>(uid))
+                    _npc.WakeNPC(uid);
+
                 // Groaning when damaged
                 EnsureComp<EmoteOnDamageComponent>(uid);
                 _emoteOnDamage.AddEmote(uid, "Scream");

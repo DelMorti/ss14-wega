@@ -3,8 +3,10 @@ using System.Linq;
 using System.Numerics;
 using Content.Server.NPC.Components;
 using Content.Server.NPC.Pathfinding;
+using Content.Shared.Damage;
 using Content.Shared.Climbing.Components;
 using Content.Shared.CombatMode;
+using Content.Shared.Weapons.Melee;
 using Content.Shared.Doors.Components;
 using Content.Shared.Interaction;
 using Content.Shared.Movement.Components;
@@ -20,6 +22,30 @@ namespace Content.Server.NPC.Systems;
 
 public sealed partial class NPCSteeringSystem
 {
+    private bool CanDamageObstacle(EntityUid target, MeleeWeaponComponent weapon)
+    {
+        if (!_injurableQuery.TryComp(target, out var injurable))
+            return false;
+
+        var applicableDamage = new DamageSpecifier();
+        foreach (var (type, amount) in weapon.Damage.DamageDict)
+        {
+            if (amount <= 0 || !_damageable.CanBeDamagedBy((target, injurable), type))
+                continue;
+
+            applicableDamage.DamageDict[type] = amount;
+        }
+
+        if (applicableDamage.Empty)
+            return false;
+
+        if (!_damageableQuery.TryComp(target, out var damageable) ||
+            _damageable.GetDamageModifierSet((target, damageable)) is not { } modifierSet)
+            return true;
+
+        return !DamageSpecifier.ApplyModifierSet(applicableDamage, modifierSet).Empty;
+    }
+
     private void ApplySeek(Span<float> interest, Vector2 direction, float weight)
     {
         if (weight == 0f || direction == Vector2.Zero)
@@ -61,7 +87,8 @@ public sealed partial class NPCSteeringSystem
 
         // TODO: Ideally for "FreeSpace" we check all entities on the tile and build flags dynamically (pathfinder refactor in future).
         var ents = _entSetPool.Get();
-        _lookup.GetLocalEntitiesIntersecting(node.GraphUid, node.Box.Enlarged(-0.04f), ents, flags: LookupFlags.Static);
+        _lookup.GetLocalEntitiesIntersecting(node.GraphUid, node.Box.Enlarged(-0.04f), ents,
+            flags: LookupFlags.Dynamic | LookupFlags.Static);
         var result = true;
 
         if (ents.Count > 0)
@@ -570,9 +597,9 @@ public sealed partial class NPCSteeringSystem
         var checkClimbs = (poly.Data.Flags & PathfindingBreadcrumbFlag.Climb) != 0x0 &&
                           (ent.Comp.Flags & PathFlags.Climbing) != 0x0 &&
                           climbing != null;
+        var hasSmashingWeapon = _melee.TryGetWeapon(ent, out _, out var weapon);
         var checkSmash = (ent.Comp.Flags & PathFlags.Smashing) != 0x0 &&
-                         combatMode != null &&
-                         _melee.TryGetWeapon(ent, out _, out var weapon) &&
+                         combatMode != null && hasSmashingWeapon && weapon != null &&
                          weapon.NextAttack <= _timing.CurTime;
 
 
@@ -604,7 +631,8 @@ public sealed partial class NPCSteeringSystem
                 return true;
 
             // Check if we can smash. Should also check if we can even damage the entity at some point.
-            return checkSmash && _destructibleQuery.HasComponent(nearbyEnt);
+            return checkSmash && _destructibleQuery.HasComponent(nearbyEnt) &&
+                   CanDamageObstacle(nearbyEnt, weapon!);
         });
     }
 

@@ -18,7 +18,6 @@ public sealed partial class PathfindingSystem
             return PathResult.NoPath;
         }
 
-        // TODO: Need partial planning that uses best node.
         PathPoly? currentNode = null;
 
         // First run
@@ -66,6 +65,8 @@ public sealed partial class PathfindingSystem
         request.CostSoFar[startNode] = 0.0f;
         var count = 0;
         var arrived = false;
+        var bestNode = startNode;
+        var bestDistance = OctileDistance(endNode, startNode);
 
         while (request.Frontier.Count > 0 && count < NodeLimit)
         {
@@ -81,6 +82,13 @@ public sealed partial class PathfindingSystem
 
             // Actual pathfinding here
             (_, currentNode) = request.Frontier.Take();
+
+            var remainingDistance = OctileDistance(endNode, currentNode);
+            if (remainingDistance < bestDistance)
+            {
+                bestDistance = remainingDistance;
+                bestNode = currentNode;
+            }
 
             // If we're inside the required distance OR we're at the end node.
             if ((request.Distance > 0f &&
@@ -124,10 +132,15 @@ public sealed partial class PathfindingSystem
             }
         }
 
-        if (!arrived)
+        var partial = !arrived && count >= NodeLimit && request.Frontier.Count > 0 &&
+                      !bestNode.Equals(startNode);
+        if (!arrived && !partial)
         {
             return PathResult.NoPath;
         }
+
+        if (partial)
+            currentNode = bestNode;
 
         var route = ReconstructPath(request.CameFrom, currentNode);
         var path = new Queue<EntityCoordinates>(route.Count);
@@ -145,6 +158,6 @@ public sealed partial class PathfindingSystem
 
         DebugTools.Assert(route.Count > 0);
         request.Polys = route;
-        return PathResult.Path;
+        return partial ? PathResult.PartialPath : PathResult.Path;
     }
 }

@@ -157,6 +157,9 @@ public abstract partial class SharedAirlockSystem : EntitySystem
         ent.Comp.Powered = args.Powered;
         Dirty(ent);
 
+        var pathfindingEvent = new AirlockPowerStateChangedEvent();
+        RaiseLocalEvent(ent.Owner, ref pathfindingEvent);
+
         if (!TryComp(ent, out DoorComponent? door))
             return;
 

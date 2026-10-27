@@ -9,6 +9,95 @@
         - !type:HTNCompoundTask
           task: IdleCompound
 
+# Zombies should pursue and bite hostile mobs, but must never run the generic
+# melee weapon pickup branch (it makes them wander toward dropped weapons).
+- type: htnCompound
+  id: ZombieHostileCompound
+  branches:
+    - tasks:
+        - !type:HTNCompoundTask
+          task: ZombieMeleeCombatCompound
+    - tasks:
+        - !type:HTNCompoundTask
+          task: IdleCompound
+
+- type: htnCompound
+  id: ZombieMeleeCombatCompound
+  branches:
+    - tasks:
+        - !type:HTNPrimitiveTask
+          operator: !type:UtilityOperator
+            proto: NearbyMeleeTargets
+            retainCurrentTarget: true
+            currentTargetScoreMargin: 0.2
+        - !type:HTNCompoundTask
+          task: ZombieMeleeAttackTargetCompound
+    - tasks:
+        - !type:HTNPrimitiveTask
+          operator: !type:UtilityOperator
+            proto: NearbyZombieCorpses
+        - !type:HTNCompoundTask
+          task: ZombieCorpseAttackCompound
+
+# Keep a zombie's current target until it is no longer a valid melee target.
+# The shared melee compound has a UtilityService that freely retargets mid-attack.
+- type: htnCompound
+  id: ZombieMeleeAttackTargetCompound
+  branches:
+    - preconditions:
+        - !type:KeyExistsPrecondition
+          key: Target
+      tasks:
+        - !type:HTNPrimitiveTask
+          operator: !type:MoveToOperator
+            shutdownState: PlanFinished
+            pathfindInPlanning: true
+            removeKeyOnFinish: false
+            targetKey: TargetCoordinates
+            pathfindKey: TargetPathfind
+            rangeKey: MeleeRange
+        - !type:HTNPrimitiveTask
+          operator: !type:JukeOperator
+            jukeType: Away
+        - !type:HTNPrimitiveTask
+          operator: !type:MeleeOperator
+            targetKey: Target
+          preconditions:
+            - !type:KeyExistsPrecondition
+              key: Target
+            - !type:TargetInRangePrecondition
+              targetKey: Target
+              rangeKey: MeleeRange
+
+- type: htnCompound
+  id: ZombieCorpseAttackCompound
+  branches:
+    - preconditions:
+        - !type:KeyExistsPrecondition
+          key: Target
+      tasks:
+        - !type:HTNPrimitiveTask
+          operator: !type:MoveToOperator
+            shutdownState: PlanFinished
+            pathfindInPlanning: true
+            removeKeyOnFinish: false
+            targetKey: TargetCoordinates
+            pathfindKey: TargetPathfind
+            rangeKey: MeleeRange
+        - !type:HTNPrimitiveTask
+          operator: !type:JukeOperator
+            jukeType: Away
+        - !type:HTNPrimitiveTask
+          operator: !type:MeleeOperator
+            targetKey: Target
+            targetState: Dead
+          preconditions:
+            - !type:KeyExistsPrecondition
+              key: Target
+            - !type:TargetInRangePrecondition
+              targetKey: Target
+              rangeKey: MeleeRange
+
 - type: htnCompound
   id: RatServantTargetAttackCompound
   branches:

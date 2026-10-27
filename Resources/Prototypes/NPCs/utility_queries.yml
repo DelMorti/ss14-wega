@@ -104,6 +104,30 @@
       curve: !type:BoolCurve
 
 - type: utilityQuery
+  id: NearbyZombieCorpses
+  query:
+    - !type:ComponentQuery
+      components:
+        - type: MobState
+    - !type:ComponentFilter
+      components:
+        - type: Zombie
+        - type: PendingZombie
+        - type: ZombieImmune
+        - type: IncurableZombie
+      retainWithComp: false
+  considerations:
+    - !type:TargetIsDeadCon
+      curve: !type:BoolCurve
+    - !type:TargetDistanceCon
+      curve: !type:PresetCurve
+        preset: TargetDistance
+    - !type:TargetAccessibleCon
+      curve: !type:BoolCurve
+    - !type:TargetInLOSOrCurrentCon
+      curve: !type:BoolCurve
+
+- type: utilityQuery
   id: NearbyColdMeleeTargets
   query:
   - !type:NearbyHostilesQuery

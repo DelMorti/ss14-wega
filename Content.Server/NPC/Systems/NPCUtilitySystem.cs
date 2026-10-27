@@ -16,7 +16,9 @@ using Content.Shared.Inventory;
 using Content.Shared.Mobs;
 using Content.Shared.Mobs.Components;
 using Content.Shared.Mobs.Systems;
+using Content.Shared.NPC.Components;
 using Content.Shared.NPC.Systems;
+using Content.Shared.Physics;
 using Content.Shared.Nutrition.Components;
 using Content.Shared.Nutrition.EntitySystems;
 using Content.Shared.Stealth;
@@ -30,10 +32,14 @@ using Content.Shared.Weapons.Melee;
 using Content.Shared.Weapons.Ranged.Components;
 using Content.Shared.Weapons.Ranged.Events;
 using Content.Shared.Whitelist;
+using Content.Shared.Zombies;
 using Microsoft.Extensions.ObjectPool;
 using Robust.Server.Containers;
 using Robust.Shared.Prototypes;
 using Robust.Shared.Utility;
+using Robust.Shared.Physics.Components;
+using Robust.Shared.Timing;
+using Robust.Server.GameObjects;
 
 namespace Content.Server.NPC.Systems;
 
@@ -60,6 +66,7 @@ public sealed partial class NPCUtilitySystem : EntitySystem
     [Dependency] private DamageableSystem _damageable = default!;
     [Dependency] private SatiationSystem _satiation = default!;
     [Dependency] private SharedStealthSystem _stealth = default!;
+    [Dependency] private IGameTiming _timing = default!;
     [Dependency] private EntityQuery<PuddleComponent> _puddleQuery = default!;
 
     private ObjectPool<HashSet<EntityUid>> _entPool =
@@ -232,6 +239,21 @@ public sealed partial class NPCUtilitySystem : EntitySystem
 
                     if (TryComp<EntityStorageComponent>(container.Owner, out var storageComponent))
                     {
+                        // Closed lockers hide their contents from zombie vision.
+                        // A zombie can keep pursuing a mob it saw enter, or investigate
+                        // one it heard recently, but cannot acquire an arbitrary hidden target.
+                        if (HasComp<ZombieComponent>(owner) && !storageComponent.Open)
+                        {
+                            var isCurrentTarget = blackboard.TryGetValue<EntityUid>("Target", out var currentTarget, EntityManager) &&
+                                                  currentTarget == targetUid;
+                            var recentlyHeard = TryComp<ZombieComponent>(owner, out var zombie) &&
+                                                zombie.HeardTarget == targetUid &&
+                                                zombie.HeardTargetExpires > _timing.CurTime;
+
+                            if (!isCurrentTarget && !recentlyHeard)
+                                return 0f;
+                        }
+
                         if (storageComponent is { Open: false } && _weldable.IsWelded(container.Owner))
                         {
                             return 0.0f;
@@ -342,7 +364,9 @@ public sealed partial class NPCUtilitySystem : EntitySystem
                     return 1f;
                 }
 
-                return _examine.InRangeUnOccluded(owner, targetUid, radius + bufferRange, null) ? 1f : 0f;
+                var seeThroughTransparent = blackboard.TryGetValue<bool>(NPCBlackboard.NavSeeThroughTransparent, out var seeThrough, EntityManager) && seeThrough;
+                return _examine.InRangeUnOccluded(owner, targetUid, radius + bufferRange,
+                    seeThroughTransparent ? hit => IsTransparentForNpcVision(hit) : null) ? 1f : 0f;
             }
             case TargetIsAliveCon:
             {
@@ -403,6 +427,13 @@ public sealed partial class NPCUtilitySystem : EntitySystem
             default:
                 throw new NotImplementedException();
         }
+
+    }
+
+    private bool IsTransparentForNpcVision(EntityUid uid)
+    {
+        return TryComp<PhysicsComponent>(uid, out var physics) &&
+               (physics.CollisionLayer & (int) CollisionGroup.Opaque) == 0;
     }
 
     private float GetAdjustedScore(float score, int considerations)
@@ -499,8 +530,39 @@ public sealed partial class NPCUtilitySystem : EntitySystem
             {
                 foreach (var ent in _npcFaction.GetNearbyHostiles(owner, vision))
                 {
+                    // Ignore only entities that have already turned into zombies.
+                    // Pending infection is still a living target and must be bitten to death.
+                    if (HasComp<ZombieComponent>(owner) && HasComp<ZombieComponent>(ent))
+                        continue;
+
                     entities.Add(ent);
                 }
+
+                // Entities inside closed storage are absent from spatial queries. Keep
+                // a zombie's current hostile target if it took shelter in a locker.
+                if (HasComp<ZombieComponent>(owner) &&
+                    blackboard.TryGetValue<EntityUid>("Target", out var storedTarget, EntityManager) &&
+                    Exists(storedTarget) &&
+                    !HasComp<ZombieComponent>(storedTarget) &&
+                    TryComp<NpcFactionMemberComponent>(storedTarget, out var storedFaction) &&
+                    _npcFaction.IsFactionHostile("Zombie", (storedTarget, storedFaction)) &&
+                    _container.TryGetContainingContainer(storedTarget, out var storedContainer) &&
+                    TryComp<EntityStorageComponent>(storedContainer.Owner, out _))
+                {
+                    entities.Add(storedTarget);
+                }
+
+                // Stored entities can be absent from spatial hostile queries. Keep
+                // the recently heard speaker available long enough to investigate.
+                if (TryComp<ZombieComponent>(owner, out var zombie) &&
+                    zombie.HeardTarget is { } heardTarget &&
+                    zombie.HeardTargetExpires > _timing.CurTime &&
+                    Exists(heardTarget) &&
+                    !HasComp<ZombieComponent>(heardTarget))
+                {
+                    entities.Add(heardTarget);
+                }
+
                 break;
             }
             default:

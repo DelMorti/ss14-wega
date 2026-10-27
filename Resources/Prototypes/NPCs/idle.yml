@@ -20,10 +20,12 @@
         - !type:HTNPrimitiveTask
           operator: !type:PickAccessibleOperator
             rangeKey: IdleRange
+            allowObstacleHandling: false
 
         - !type:HTNPrimitiveTask
           operator: !type:MoveToOperator
             pathfindInPlanning: false
+            allowObstacleHandling: false
 
         - !type:HTNPrimitiveTask
           operator: !type:RandomOperator

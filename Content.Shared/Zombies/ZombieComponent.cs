@@ -18,6 +18,13 @@ namespace Content.Shared.Zombies;
 [RegisterComponent, NetworkedComponent]
 public sealed partial class ZombieComponent : Component
 {
+    /// <summary>Last non-zombie speaker heard by this zombie, retained briefly.</summary>
+    [ViewVariables]
+    public EntityUid? HeardTarget;
+
+    [ViewVariables]
+    public TimeSpan HeardTargetExpires;
+
     /// <summary>
     /// The baseline infection chance you have if you have no protective gear
     /// </summary>
@@ -72,10 +79,10 @@ public sealed partial class ZombieComponent : Component
     public ProtoId<AntagPrototype> ZombieRoleId = "Zombie";
 
     [DataField]
-    public Dictionary<ProtoId<OrganCategoryPrototype>, OrganProfileData> BeforeZombifiedProfiles;
+    public Dictionary<ProtoId<OrganCategoryPrototype>, OrganProfileData> BeforeZombifiedProfiles = new();
 
     [DataField]
-    public Dictionary<ProtoId<OrganCategoryPrototype>, Dictionary<HumanoidVisualLayers, List<Marking>>> BeforeZombifiedMarkings;
+    public Dictionary<ProtoId<OrganCategoryPrototype>, Dictionary<HumanoidVisualLayers, List<Marking>>> BeforeZombifiedMarkings = new();
 
     [DataField("emoteId")]
     public ProtoId<EmoteSoundsPrototype>? EmoteSoundsId = "Zombie";

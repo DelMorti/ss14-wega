@@ -7,11 +7,23 @@ using Content.Server.Administration.Managers;
 using Content.Server.Destructible;
 using Content.Server.NPC.Systems;
 using Content.Shared.Access.Components;
+using Content.Shared.Access.Systems;
 using Content.Shared.Administration;
 using Content.Shared.Climbing.Components;
+using Content.Shared.Construction;
 using Content.Shared.Doors.Components;
+using Content.Shared.Damage;
+using Content.Shared.Damage.Components;
+using Content.Shared.Damage.Systems;
 using Content.Shared.NPC;
+using Content.Shared.NPC.Components;
+using Content.Shared.NPC.Systems;
 using Content.Shared.StepTrigger.Components; // Corvax-Wega-Add
+using Content.Shared.Tag;
+using Content.Shared.CombatMode;
+using Content.Shared.Prying.Components;
+using Content.Shared.Weapons.Melee;
+using Content.Shared.Zombies;
 using Robust.Server.Player;
 using Robust.Shared.Enums;
 using Robust.Shared.Map;
@@ -19,6 +31,7 @@ using Robust.Shared.Map.Components;
 using Robust.Shared.Physics;
 using Robust.Shared.Physics.Systems;
 using Robust.Shared.Player;
+using Robust.Shared.Prototypes;
 using Robust.Shared.Random;
 using Robust.Shared.Threading;
 using Robust.Shared.Timing;
@@ -47,22 +60,33 @@ namespace Content.Server.NPC.Pathfinding
         [Dependency] private IPlayerManager _playerManager = default!;
         [Dependency] private IRobustRandom _random = default!;
         [Dependency] private DestructibleSystem _destructible = default!;
+        [Dependency] private DamageableSystem _damageable = default!;
+        [Dependency] private TagSystem _tagSystem = default!;
         [Dependency] private EntityLookupSystem _lookup = default!;
         [Dependency] private FixtureSystem _fixtures = default!;
         [Dependency] private NPCSystem _npc = default!;
+        [Dependency] private NpcFactionSystem _npcFaction = default!;
+        [Dependency] private AccessReaderSystem _access = default!;
+        [Dependency] private SharedMeleeWeaponSystem _melee = default!;
         [Dependency] private SharedMapSystem _maps = default!;
         [Dependency] private SharedPhysicsSystem _physics = default!;
         [Dependency] private SharedTransformSystem _transform = default!;
 
         [Dependency] private EntityQuery<AccessReaderComponent> _accessReaderQuery = default!;
         [Dependency] private EntityQuery<DestructibleComponent> _destructibleQuery = default!;
+        [Dependency] private EntityQuery<InjurableComponent> _injurableQuery = default!;
+        [Dependency] private EntityQuery<DamageableComponent> _damageableQuery = default!;
         [Dependency] private EntityQuery<DoorComponent> _doorQuery = default!;
+        [Dependency] private EntityQuery<AirlockComponent> _airlockQuery = default!;
         [Dependency] private EntityQuery<ClimbableComponent> _climbableQuery = default!;
+        [Dependency] private EntityQuery<SharedCanBuildWindowOnTopComponent> _grilleQuery = default!;
         [Dependency] private EntityQuery<FixturesComponent> _fixturesQuery = default!;
         [Dependency] private EntityQuery<MapGridComponent> _mapGridQuery = default!;
         [Dependency] private EntityQuery<StepTriggerComponent> _stepTriggerQuery; // Corvax-Wega-Add
 
         private readonly Dictionary<ICommonSession, PathfindingDebugMode> _subscribedSessions = new();
+
+        private static readonly ProtoId<TagPrototype> WindowTag = "Window";
 
         [ViewVariables]
         private readonly List<PathRequest> _pathRequests = new(PathTickLimit);
@@ -267,7 +291,11 @@ namespace Content.Server.NPC.Pathfinding
                 (layer, mask) = _physics.GetHardCollision(entity, fixtures);
             }
 
-            var request = new BFSPathRequest(maxRange, limit, start.Coordinates, flags, layer, mask, cancelToken);
+            DamageSpecifier? smashDamage = _melee.TryGetWeapon(entity, out _, out var weapon)
+                ? weapon.Damage.Clone()
+                : null;
+            var request = new BFSPathRequest(maxRange, limit, start.Coordinates, flags, layer, mask, cancelToken, smashDamage);
+            SetAccessData(request, entity);
             var path = await GetPath(request);
 
             if (path.Result != PathResult.Path)
@@ -289,8 +317,8 @@ namespace Content.Server.NPC.Pathfinding
             if (!TryComp(entity, out TransformComponent? start))
                 return null;
 
-            var request = GetRequest(entity, start.Coordinates, end, range, cancelToken, flags);
-            var path = await GetPath(request);
+            var (path, request) = await GetPathWithDoorFallback(
+                entity, start.Coordinates, end, range, cancelToken, flags, safe: false);
 
             if (path.Result != PathResult.Path)
                 return null;
@@ -321,8 +349,15 @@ namespace Content.Server.NPC.Pathfinding
                 !TryComp(target, out TransformComponent? targetXform))
                 return new PathResultEvent(PathResult.NoPath, new List<PathPoly>());
 
-            var request = GetRequest(entity, xform.Coordinates, targetXform.Coordinates, range, cancelToken, flags);
-            return await GetPath(request);
+            var (path, _) = await GetPathWithDoorFallback(
+                entity,
+                xform.Coordinates,
+                targetXform.Coordinates,
+                range,
+                cancelToken,
+                flags,
+                safe: false);
+            return path;
         }
 
         public async Task<PathResultEvent> GetPath(
@@ -333,8 +368,8 @@ namespace Content.Server.NPC.Pathfinding
             CancellationToken cancelToken,
             PathFlags flags = PathFlags.None)
         {
-            var request = GetRequest(entity, start, end, range, cancelToken, flags);
-            return await GetPath(request);
+            var (path, _) = await GetPathWithDoorFallback(entity, start, end, range, cancelToken, flags, safe: false);
+            return path;
         }
 
         /// <summary>
@@ -348,8 +383,29 @@ namespace Content.Server.NPC.Pathfinding
             CancellationToken cancelToken,
             PathFlags flags = PathFlags.None)
         {
+            var (path, _) = await GetPathWithDoorFallback(entity, start, end, range, cancelToken, flags, safe: true);
+            return path;
+        }
+
+        private async Task<(PathResultEvent Path, PathRequest Request)> GetPathWithDoorFallback(
+            EntityUid entity,
+            EntityCoordinates start,
+            EntityCoordinates end,
+            float range,
+            CancellationToken cancelToken,
+            PathFlags flags,
+            bool safe)
+        {
             var request = GetRequest(entity, start, end, range, cancelToken, flags);
-            return await GetPath(request, true);
+            var path = await GetPath(request, safe);
+            if (path.Result != PathResult.NoPath ||
+                (flags & PathFlags.Prying) == 0 ||
+                cancelToken.IsCancellationRequested)
+                return (path, request);
+
+            var pryRequest = GetRequest(entity, start, end, range, cancelToken, flags);
+            pryRequest.AllowLockedDoorPrying = true;
+            return (await GetPath(pryRequest, safe), pryRequest);
         }
 
         /// <summary>
@@ -380,7 +436,7 @@ namespace Content.Server.NPC.Pathfinding
             CancellationToken cancelToken,
             PathFlags flags = PathFlags.None)
         {
-            var path = await GetPath(uid, start, end, range, cancelToken);
+            var path = await GetPath(uid, start, end, range, cancelToken, flags);
             RaiseLocalEvent(uid, path);
         }
 
@@ -427,7 +483,19 @@ namespace Content.Server.NPC.Pathfinding
                 (layer, mask) = _physics.GetHardCollision(entity, fixtures);
             }
 
-            return new AStarPathRequest(start, end, flags, range, layer, mask, cancelToken);
+            DamageSpecifier? smashDamage = _melee.TryGetWeapon(entity, out _, out var weapon)
+                ? weapon.Damage.Clone()
+                : null;
+            var request = new AStarPathRequest(start, end, flags, range, layer, mask, cancelToken, smashDamage);
+            SetAccessData(request, entity);
+            return request;
+        }
+
+        private void SetAccessData(PathRequest request, EntityUid entity)
+        {
+            request.AccessTags = _access.FindAccessTags(entity);
+            _access.FindStationRecordKeys(entity, out var stationKeys);
+            request.StationRecordKeys = stationKeys;
         }
 
         public PathFlags GetFlags(EntityUid uid)
@@ -440,21 +508,44 @@ namespace Content.Server.NPC.Pathfinding
             return GetFlags(npc.Blackboard);
         }
 
-        public PathFlags GetFlags(NPCBlackboard blackboard)
+        public PathFlags GetFlags(NPCBlackboard blackboard, bool allowObstacleHandling = true)
         {
             var flags = PathFlags.None;
+            blackboard.TryGetValue<EntityUid>(NPCBlackboard.Owner, out var owner, EntityManager);
 
-            if (blackboard.TryGetValue<bool>(NPCBlackboard.NavPry, out var pry, EntityManager) && pry)
+            // Explicit prototype settings override inferred component capabilities.
+            var canPry = blackboard.TryGetValue<bool>(NPCBlackboard.NavPry, out var pry, EntityManager)
+                ? pry
+                : owner.IsValid() && HasComp<PryingComponent>(owner);
+            if (canPry)
             {
                 flags |= PathFlags.Prying;
             }
 
-            if (blackboard.TryGetValue<bool>(NPCBlackboard.NavSmash, out var smash, EntityManager) && smash)
+            const string CrewFaction = "NanoTrasen";
+            var canSmash = blackboard.TryGetValue<bool>(NPCBlackboard.NavSmash, out var smash, EntityManager)
+                ? smash
+                : owner.IsValid() && HasComp<CombatModeComponent>(owner) &&
+                  TryComp<NpcFactionMemberComponent>(owner, out var faction) &&
+                  _npcFaction.IsFactionHostile(CrewFaction, (owner, faction)) &&
+                  _melee.TryGetWeapon(owner, out _, out var weapon) &&
+                  weapon.Damage.DamageDict.TryGetValue("Structural", out var structuralDamage) && structuralDamage > 0;
+            if (canSmash)
             {
                 flags |= PathFlags.Smashing;
             }
 
-            if (blackboard.TryGetValue<bool>(NPCBlackboard.NavClimb, out var climb, EntityManager) && climb)
+            if (!allowObstacleHandling)
+                flags &= ~(PathFlags.Prying | PathFlags.Smashing);
+
+            // Zombies pursue through floor clutter and minor step hazards.
+            if (owner.IsValid() && HasComp<ZombieComponent>(owner))
+                flags |= PathFlags.IgnoreStepTriggers;
+
+            var canClimb = blackboard.TryGetValue<bool>(NPCBlackboard.NavClimb, out var climb, EntityManager)
+                ? climb
+                : owner.IsValid() && HasComp<ClimbingComponent>(owner);
+            if (canClimb)
             {
                 flags |= PathFlags.Climbing;
             }

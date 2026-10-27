@@ -13,6 +13,8 @@
       blackboard:
         NavSmash: !type:Bool
           true
+        NavSeeThroughTransparent: !type:Bool
+          true
     - type: NpcFactionMember
       factions:
       - Dragon

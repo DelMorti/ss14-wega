@@ -13,10 +13,23 @@ namespace Content.Server.NPC.HTN.PrimitiveTasks.Operators;
 /// </summary>
 public sealed partial class UtilityOperator : HTNOperator
 {
+    [Dependency] private IEntityManager _entManager = default!;
     [Dependency] private NPCUtilitySystem _npcUtilitySystem = default!;
 
     [DataField]
     public string Key = "Target";
+
+    /// <summary>
+    /// Keep the current target while it remains among the query's valid results.
+    /// </summary>
+    [DataField("retainCurrentTarget")]
+    public bool RetainCurrentTarget;
+
+    /// <summary>
+    /// Minimum score advantage a new target needs before replacing a valid current target.
+    /// </summary>
+    [DataField("currentTargetScoreMargin")]
+    public float CurrentTargetScoreMargin;
 
     [DataField]
     public ReturnTypeResult ReturnType = ReturnTypeResult.Highest;
@@ -40,6 +53,15 @@ public sealed partial class UtilityOperator : HTNOperator
         {
             case ReturnTypeResult.Highest:
                 var target = result.GetHighest();
+
+                if (RetainCurrentTarget &&
+                    blackboard.TryGetValue<EntityUid>(Key, out var currentTarget, _entManager) &&
+                    result.Entities.TryGetValue(currentTarget, out var currentScore) &&
+                    result.Entities.TryGetValue(target, out var bestScore) &&
+                    bestScore - currentScore < CurrentTargetScoreMargin)
+                {
+                    target = currentTarget;
+                }
 
                 if (!target.IsValid())
                 {

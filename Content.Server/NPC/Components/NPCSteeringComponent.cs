@@ -114,6 +114,9 @@ public sealed partial class NPCSteeringComponent : Component
 
     [ViewVariables(VVAccess.ReadWrite)] public PathFlags Flags = PathFlags.None;
 
+    [DataField]
+    public bool AllowObstacleHandling = true;
+
     /// <summary>
     /// If the NPC is using a do_after to clear an obstacle.
     /// </summary>
